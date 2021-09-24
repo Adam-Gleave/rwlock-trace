@@ -2,7 +2,6 @@ use std::{marker::PhantomData, ops::{Deref, DerefMut}, sync::atomic::{AtomicU64,
 
 use backtrace::{Backtrace, BacktraceFrame};
 use names::Generator;
-use tokio::sync::Semaphore;
 
 const FRAME_OFFSET: usize = 3;
 
@@ -13,8 +12,11 @@ pub struct RwLock<T> {
     idx: AtomicU64,
 }
 
-impl<'a, T> RwLock<T> {
-    pub fn new(inner: T) -> Self {
+impl<'a, T: ?Sized> RwLock<T>
+where
+    T: Sized,
+{
+    pub fn new(inner: T) -> RwLock<T> {
         let mut generator = Generator::default();
 
         Self {
@@ -40,13 +42,13 @@ impl<'a, T> RwLock<T> {
 }
 
 #[derive(Debug)]
-pub struct RwLockReadGuard<'a, T> {
+pub struct RwLockReadGuard<'a, T: ?Sized> {
     guard: tokio::sync::RwLockReadGuard<'a, T>,
     name: &'a str,
     idx: u64,
 }
 
-impl<'a, T> RwLockReadGuard<'a, T> {
+impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
     pub fn new(inner: tokio::sync::RwLockReadGuard<'a, T>, name: &'a str, idx: u64) -> Self {
         let new = Self { guard: inner, name, idx };
         log_backtrace(&format!("[READ] Got ({}:{})", name, idx));
@@ -54,13 +56,13 @@ impl<'a, T> RwLockReadGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for RwLockReadGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for RwLockReadGuard<'a, T> {
     fn drop(&mut self) {
         log_backtrace(&format!("[READ] Release ({}:{})", self.name, self.idx));
     }
 }
 
-impl<'a, T> Deref for RwLockReadGuard<'a, T> {
+impl<'a, T: ?Sized> Deref for RwLockReadGuard<'a, T> {
     type Target = tokio::sync::RwLockReadGuard<'a, T>;
 
     fn deref(&self) -> &Self::Target {
@@ -68,7 +70,7 @@ impl<'a, T> Deref for RwLockReadGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for RwLockReadGuard<'a, T> {
+impl<'a, T: ?Sized> DerefMut for RwLockReadGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut tokio::sync::RwLockReadGuard<'a, T> {
         &mut self.guard
     }
@@ -95,13 +97,13 @@ impl<T: ?Sized> DerefMut for RwLockMappedWriteGuard<'_, T> {
 }
 
 #[derive(Debug)]
-pub struct RwLockWriteGuard<'a, T> {
+pub struct RwLockWriteGuard<'a, T: ?Sized> {
     guard: tokio::sync::RwLockWriteGuard<'a, T>,
     name: &'a str,
     idx: u64,
 }
 
-impl<'a, T> RwLockWriteGuard<'a, T> {
+impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     pub fn new(inner: tokio::sync::RwLockWriteGuard<'a, T>, name: &'a str, idx: u64) -> Self {
         let new = Self { guard: inner, name, idx };
         log_backtrace(&format!("[WRITE] Got ({}:{})", name, idx));
@@ -129,13 +131,13 @@ impl<'a, T> RwLockWriteGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for RwLockWriteGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for RwLockWriteGuard<'a, T> {
     fn drop(&mut self) {
         log_backtrace(&format!("[WRITE] Release ({}:{})", self.name, self.idx));
     }
 }
 
-impl<'a, T> Deref for RwLockWriteGuard<'a, T> {
+impl<'a, T: ?Sized> Deref for RwLockWriteGuard<'a, T> {
     type Target = tokio::sync::RwLockWriteGuard<'a, T>;
 
     fn deref(&self) -> &Self::Target {
@@ -143,7 +145,7 @@ impl<'a, T> Deref for RwLockWriteGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for RwLockWriteGuard<'a, T> {
+impl<'a, T: ?Sized> DerefMut for RwLockWriteGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut tokio::sync::RwLockWriteGuard<'a, T> {
         &mut self.guard
     }
@@ -186,3 +188,8 @@ fn log_backtrace(message: &str) {
 
     log::warn!("{}:\n{}", message, output);
 }
+
+unsafe impl<T> Send for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+unsafe impl<T> Send for RwLockMappedWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+unsafe impl<T> Sync for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+unsafe impl<T> Sync for RwLockMappedWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
