@@ -1,7 +1,8 @@
-use std::{ops::{Deref, DerefMut}, sync::atomic::{AtomicU64, Ordering}};
+use std::{marker::PhantomData, ops::{Deref, DerefMut}, sync::atomic::{AtomicU64, Ordering}};
 
 use backtrace::{Backtrace, BacktraceFrame};
 use names::Generator;
+use tokio::sync::Semaphore;
 
 const FRAME_OFFSET: usize = 3;
 
@@ -74,6 +75,26 @@ impl<'a, T> DerefMut for RwLockReadGuard<'a, T> {
 }
 
 #[derive(Debug)]
+pub struct RwLockMappedWriteGuard<'a, T: ?Sized> {
+    data: *mut T,
+    marker: PhantomData<&'a mut T>,
+}
+
+impl<T: ?Sized> Deref for RwLockMappedWriteGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*self.data }
+    }
+}
+
+impl<T: ?Sized> DerefMut for RwLockMappedWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.data }
+    }
+}
+
+#[derive(Debug)]
 pub struct RwLockWriteGuard<'a, T> {
     guard: tokio::sync::RwLockWriteGuard<'a, T>,
     name: &'a str,
@@ -85,6 +106,26 @@ impl<'a, T> RwLockWriteGuard<'a, T> {
         let new = Self { guard: inner, name, idx };
         log_backtrace(&format!("[WRITE] Got ({}:{})", name, idx));
         new
+    }
+
+    pub fn try_map<F, U: ?Sized>(
+        mut this: Self,
+        f: F,
+    ) -> Result<RwLockMappedWriteGuard<'a, U>, Self>
+    where
+        F: FnOnce(&mut T) -> Option<&mut U>,
+    {
+        let data = match f(&mut *this) {
+            Some(data) => data as *mut U,
+            None => return Err(this),
+        };
+
+        std::mem::forget(this);
+
+        Ok(RwLockMappedWriteGuard {
+            data,
+            marker: PhantomData,
+        })
     }
 }
 
