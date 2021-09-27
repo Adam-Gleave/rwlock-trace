@@ -1,7 +1,12 @@
-use std::{marker::PhantomData, ops::{Deref, DerefMut}, sync::atomic::{AtomicU64, Ordering}};
-
 use backtrace::{Backtrace, BacktraceFrame};
 use names::Generator;
+
+use std::{
+    marker::PhantomData, 
+    ops::{Deref, DerefMut},
+    panic::Location,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 const FRAME_OFFSET: usize = 3;
 
@@ -26,17 +31,25 @@ where
         }
     }
 
+    #[track_caller]
     pub async fn read(&'a self) -> RwLockReadGuard<'a, T> {
         self.idx.fetch_add(1, Ordering::SeqCst);
         let idx = self.idx.load(Ordering::SeqCst);
-        log_backtrace(&format!("[READ] Acquire ({}:{})", self.name, idx));
+        log_backtrace(
+            &format!("[READ] Acquire ({}:{})", self.name, idx),
+            Location::caller(),
+        );
         RwLockReadGuard::new(self.lock.read().await, &self.name, idx)
     }
 
+    #[track_caller]
     pub async fn write(&'a self) -> RwLockWriteGuard<'a, T> {
         self.idx.fetch_add(1, Ordering::SeqCst);
         let idx = self.idx.load(Ordering::SeqCst);
-        log_backtrace(&format!("[WRITE] Acquire ({}:{})", self.name, idx));
+        log_backtrace(
+            &format!("[WRITE] Acquire ({}:{})", self.name, idx),
+            Location::caller(),
+        );
         RwLockWriteGuard::new(self.lock.write().await, &self.name, idx)
     }
 }
@@ -49,16 +62,24 @@ pub struct RwLockReadGuard<'a, T: ?Sized> {
 }
 
 impl<'a, T: ?Sized> RwLockReadGuard<'a, T> {
+    #[track_caller]
     pub fn new(inner: tokio::sync::RwLockReadGuard<'a, T>, name: &'a str, idx: u64) -> Self {
         let new = Self { guard: inner, name, idx };
-        log_backtrace(&format!("[READ] Got ({}:{})", name, idx));
+        log_backtrace(
+            &format!("[READ] Got ({}:{})", name, idx),
+            Location::caller(),
+        );
         new
     }
 }
 
 impl<'a, T: ?Sized> Drop for RwLockReadGuard<'a, T> {
+    #[track_caller]
     fn drop(&mut self) {
-        log_backtrace(&format!("[READ] Release ({}:{})", self.name, self.idx));
+        log_backtrace(
+            &format!("[READ] Release ({}:{})", self.name, self.idx),
+            Location::caller(),
+        );
     }
 }
 
@@ -104,9 +125,13 @@ pub struct RwLockWriteGuard<'a, T: ?Sized> {
 }
 
 impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
+    #[track_caller]
     pub fn new(inner: tokio::sync::RwLockWriteGuard<'a, T>, name: &'a str, idx: u64) -> Self {
         let new = Self { guard: inner, name, idx };
-        log_backtrace(&format!("[WRITE] Got ({}:{})", name, idx));
+        log_backtrace(
+            &format!("[WRITE] Got ({}:{})", name, idx),
+            Location::caller(),
+        );
         new
     }
 
@@ -132,8 +157,12 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
 }
 
 impl<'a, T: ?Sized> Drop for RwLockWriteGuard<'a, T> {
+    #[track_caller]
     fn drop(&mut self) {
-        log_backtrace(&format!("[WRITE] Release ({}:{})", self.name, self.idx));
+        log_backtrace(
+            &format!("[WRITE] Release ({}:{})", self.name, self.idx),
+            Location::caller(),
+        );
     }
 }
 
@@ -151,42 +180,8 @@ impl<'a, T: ?Sized> DerefMut for RwLockWriteGuard<'a, T> {
     }
 }
 
-fn log_backtrace(message: &str) {
-    let this_file = file!();
-    let mut trace = Backtrace::new();
-    trace.resolve();
-
-    let symbols = trace
-        .frames()
-        .iter()
-        .flat_map(BacktraceFrame::symbols)
-        .skip_while(|s| {
-            s.filename()
-             .map(|p| !p.ends_with(this_file))
-             .unwrap_or(true)
-        })
-        .enumerate()
-        .filter(|&(i, s)| {
-            i >= FRAME_OFFSET &&
-            s.filename().map_or(false, |p|
-                !p.to_string_lossy().contains(".cargo") &&
-                !p.to_string_lossy().contains(".rustup") &&
-                !p.to_string_lossy().contains("/rustc")
-            )
-        });
-
-    let output = symbols.fold(String::new(), |acc, (i, s)| {
-        acc + format!(
-            "[{}] {}:{} {}\n",
-            i - FRAME_OFFSET,
-            s.filename().unwrap().to_string_lossy(),
-            s.lineno().unwrap(),
-            s.name().unwrap(),
-        )
-        .as_str()
-    });
-
-    log::warn!("{}:\n{}", message, output);
+fn log_backtrace(message: &str, caller: &'static Location<'static>) {
+    log::warn!("{}: {}:{}:{}", message, caller.file(), caller.line(), caller.column());
 }
 
 unsafe impl<T> Send for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
